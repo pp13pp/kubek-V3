@@ -1,18 +1,37 @@
-#include <Adafruit_NeoPixel.h>
+//#include <Adafruit_NeoPixel.h>
 #include <math.h>
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
 #include <Wire.h>
 #include <Adafruit_INA219.h>
+#define FASTLED_ALLOW_INTERRUPTS 0
+#include <FastLED.h>
+FASTLED_USING_NAMESPACE
+
+#define DATA_PIN            2
+#define NUM_LEDS            35
+#define MAX_POWER_MILLIAMPS 1950
+#define LED_TYPE            WS2812B
+#define COLOR_ORDER         GRB
+CRGB leds[NUM_LEDS];
+
+/////// świecenie tryby
+//bool overrideEffect = false;  // Flaga do kontroli efektu
+enum EffectMode { PACIFICA, SOC10, SOC5, RAINBOW };  ///możliwe tryby
+EffectMode currentMode = PACIFICA;
+unsigned long overrideEndTime = 0;
+unsigned long overrideEndTime = 0;
+int DELAYVAL=750; //czas bazowy wyświetlania efektów systemowych [ms]
+
+
+//////do obsługi żyroskopu
+float lastAngleX = 0; ///poprzedni kąt nachylenia osi X
+float lastAngleY = 0; ///poprzedni kąt nachylenia osi Y
+float lastAngleZ = 0; ///poprzedni kąt nachylenia osi Z
+
 
 Adafruit_MPU6050 mpu;
 Adafruit_INA219 ina219;
-
-#define LED  2   // The ESP8266 pin that connects to WS2812B
-#define LEDOW   34 // liczba ledów to 35, ale adresy od 0
-
-Adafruit_NeoPixel pixels(LEDOW, LED, NEO_GRB + NEO_KHZ800); //ustawienie LED
-#define DELAYVAL 500 // Time (in milliseconds) to pause 
 
 #define laduj 0 //enable ładowania ogniw
 #define wlancz 13 // pozycja włącznika
@@ -48,8 +67,13 @@ float mAh_OCV[]={0,0.001,21.54,78.01, 152.30,229.56,321.693,452.45,586.18,722.88
 int mAh_max=2575; //max SOC - zmierzyć kiedyś
 
 void setup() {
-pixels.begin(); //start LED
- Serial.begin(9600);
+// pixels.begin(); //start LED
+delay( 2000); // 3 second delay for boot recovery, and a moment of silence
+  FastLED.addLeds<LED_TYPE,DATA_PIN,COLOR_ORDER>(leds, NUM_LEDS)
+        .setCorrection( TypicalLEDStrip );
+  FastLED.setMaxPowerInVoltsAndMilliamps( 5, MAX_POWER_MILLIAMPS);
+
+Serial.begin(9600);
 
 
 ////////ina219 miernik prądu
@@ -67,6 +91,8 @@ for (int i = 0; i < 30; i = i + 1)
   }
 }
 
+
+Wire.begin();   ///nie wiem czy to musi tu być
 /////////żyroskop konfig
 mpu.begin();
 
@@ -161,22 +187,8 @@ gyro();
 
 
 
-pixels.clear(); // Set all pixel colors to 'off'
 
-  // The first NeoPixel in a strand is #0, second is 1, all the way up
-  // to the count of pixels minus one.
-  for(int i=0; i<LEDOW; i++) { // For each pixel...
-
-    // pixels.Color() takes RGB values, from 0,0,0 up to 255,255,255
-    // Here we're using a moderately bright green color:
-    pixels.setPixelColor(i, pixels.Color(0, 50, 0));
-
-    pixels.show();   // Send the updated pixel colors to the hardware.
-
-    delay(DELAYVAL); // Pause before next pass through loop
-  }
-
-
+ 
 
 }
 
@@ -326,25 +338,66 @@ void bateria_pada()  ///jak poziom SOC spada poniżej 10% zaczniej drzeć mordę
 {
   if (mAh<mAh_max*0.1)  //dla 10% wstępne ostrzeżenie
   {
-    for(int i=0; i<LEDOW; i++)
-    {
-    // pixels.Color() takes RGB values, from 0,0,0 up to 255,255,255
-    pixels.setPixelColor(i, pixels.Color(80, 0, 0)); //średni czerwony na wszystkie
-    pixels.show();   
-
+    EVERY_N_SECONDS(120)  // Co 120 sekund mrygaj
+    { 
+        overrideEffect = true;
+        overrideEndTime = millis() + DELAYVAL;  // przez delayval
+        FastLED.clear(); //zgaś wszystko
+        FastLED.show();
+        fill_solid(leds, NUM_LEDS, CRGB(76, 0, 0));  // 30% z maksymalnej wartości 255 (0.3 * 255 ≈ 76)
+        FastLED.show();  
     }
- delay(DELAYVAL); // wyświetlaj tak długo
+
+    // Po delayVAL przywróć efekt bierzący
+      if (overrideEffect && millis() > overrideEndTime) 
+    {
+        overrideEffect = false;
+    }
+    // Jeśli efekt nie jest nadpisany, wyświetl to co robiłeś do tej pory
+    if (!overrideEffect)
+    {
+        swiecenie_LED();  // funkcja obsługująca pokaz LED
+        FastLED.show();
+    }
+    
   }
   
   if (mAh<mAh_max*0.05)   //jest źle, gdzie mój prąd!
   {
-    for(int i=0; i<LEDOW-5; i=i+5)
-    {
-    // pixels.Color() takes RGB values, from 0,0,0 up to 255,255,255
-    pixels.setPixelColor(i, pixels.Color(150, 0, 0));
-    pixels.show();  
-
+        EVERY_N_SECONDS(120)  // Co 120 sekund mrygaj
+    { 
+        overrideEffect = true;
+        overrideEndTime = millis() + DELAYVAL*2;  // Przez delayval x 2
+        FastLED.clear(); //zgaś wszystko
+        FastLED.show();
+        for(int i=0; i<LEDOW-5; i=i+5) //co 5 zapal na czerwono
+        {
+        leds[i] = CRGB(150, 0, 0); ///napierdalaj czerowym
+        }
+        FastLED.show();  
     }
- delay(DELAYVAL*2); //wyświetlaj tak długo
+
+    // Po delayVAL przywróć efekt bierzący
+    if (overrideEffect && millis() > overrideEndTime) 
+    {
+        overrideEffect = false;
+    }
+    // Jeśli efekt nie jest nadpisany, wyświetl to co robiłeś do tej pory
+    if (!overrideEffect)
+    {
+        swiecenie_LED();  // funkcja obsługująca pokaz LED
+        FastLED.show();
+    }
   }
+}
+
+//////////////////////////LEDy
+void SOC10()  // jak SOC spadnie poniżej 10%
+{
+
+}
+
+void swiecenie_LED()
+{
+
 }
