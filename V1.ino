@@ -6,6 +6,8 @@
 #include <Adafruit_INA219.h>
 #define FASTLED_ALLOW_INTERRUPTS 0
 #include <FastLED.h>
+#include <SPI.h>
+#include <SD.h>
 FASTLED_USING_NAMESPACE
 
 #define DATA_PIN            2
@@ -16,8 +18,12 @@ FASTLED_USING_NAMESPACE
 CRGB leds[NUM_LEDS];
 
 /////// świecenie tryby
+
+#define FRAMES_PER_SECOND 70
+ bool gReverseDirection = false;
+
 //bool overrideEffect = false;  // Flaga do kontroli efektu
-enum EffectMode { PACIFICA, SOC_10, SOC_5, SOC_100, RAINBOW };  ///możliwe tryby
+enum EffectMode { PACIFICA, SOC_10, SOC_5, SOC_100, RAINBOW, flames, cylon, twinkle };  ///możliwe tryby
 EffectMode currentMode = PACIFICA;
 unsigned long overrideEndTime = 0;
 
@@ -32,14 +38,20 @@ bool SOC100Active = false; ///flaga do kontroli efektu świecenia przy SOC 99%
 float lastAngleX = 0; ///poprzedni kąt nachylenia osi X
 float lastAngleY = 0; ///poprzedni kąt nachylenia osi Y
 float lastAngleZ = 0; ///poprzedni kąt nachylenia osi Z
+float angleX=0; //
+float angleY=0;
+float angleZ=0;
+float accX=0;
+float accY=0;
+float accZ=9.81;
 
 
 Adafruit_MPU6050 mpu;
 Adafruit_INA219 ina219;
 
+///////////ogólne i sprzętowe
 #define laduj 0 //enable ładowania ogniw
-#define wlancz 13 // pozycja włącznika
-
+#define wlancz 13 // pozycja włącznika ??? do zmiany przy SD
 
 int pstryczek=1; // stan włącznika
 int ladowanie=1; // 0 == nie ładuj; 1== żądanie ładowania
@@ -50,7 +62,7 @@ float Rseries = 9.2;// R Series resistor 10K
 float To = 298.15; // Nominal Temperature
 float Vin=4.92; //napięcie "5V"
 
-//ina219
+////////////ina219
   float shuntvoltage = 0;
   float busvoltage = 0;
   float current_mA = 0;
@@ -60,17 +72,26 @@ float Vin=4.92; //napięcie "5V"
 //////////////stan baterii
 float SOC; // poziom naładowania %; 2,5V==0; 4,2V==100% 
 double mAh; // poziom naładowania w mAh
+float mAh1, mAh2; //pomocnicze
 long prev_milis=0;
 long czas=0; // czas na potrzeby liczenia
 long czas_ladowania=0;
 long czas_zasilZEW=0;
 
-//31 wartości do identyfikowania *początkowego* SOC
+// D5, D6, D7, D8 // SCK, MISO, MOSI, CS
+#define SD_CS_PIN D8
+
+File dataFile; 
+int obrot=0; //ilość pętli do zapisu mAh 
+ 
+////////31 wartości do identyfikowania *początkowego* SOC
 float napiecia[]={4.2, 4.06, 4.03, 3.99, 3.97, 3.94, 3.93, 3.91, 3.90, 3.89, 3.88, 3.8799, 3.8796, 3.873, 3.871, 3.870, 3.868, 3.867, 3.866, 3.865, 3.864, 3.862, 3.8638, 3.79, 3.43, 3.38, 3.14, 3.03, 2.937, 2.7, 2.4}; //progi napięc w V
 float mAh_OCV[]={0,0.001,21.54,78.01, 152.30,229.56,321.693,452.45,586.18,722.88,868.49,1026.02,1141.91,1284.54,1415.36,1543.09,1685.73,1795.69,1899.782,2015.67,2122.58,2214.71,2312.77,2384.11,2443.53,2485.14,2523.74,2547.54,2556.463,2571.322,2575}; //progi pojemności mAh
 int mAh_max=2575; //max SOC - zmierzyć kiedyś
 
 void setup() {
+
+
 // pixels.begin(); //start LED
 delay( 2000); // 3 second delay for boot recovery, and a moment of silence
   FastLED.addLeds<LED_TYPE,DATA_PIN,COLOR_ORDER>(leds, NUM_LEDS)
@@ -83,18 +104,49 @@ Serial.begin(9600);
 ////////ina219 miernik prądu
 ina219.begin();
 delay(500);
-///początkowy SOC
+
+/////karta SD i początkowe SOC na bazie zapisu z SD
+
+ if (!SD.begin(SD_CS_PIN)) {
+        Serial.println("SD card initialization failed!");
+        while (1);
+    }
+           // Odczyt lub inicjalizacja pliku "pojemnosc"
+    if (SD.exists("pojemnosc"))
+    {
+        dataFile = SD.open("pojemnosc", FILE_READ);
+        if (dataFile) 
+        {
+            String lastValue;
+            while (dataFile.available()) {
+                lastValue = dataFile.readStringUntil('\n');
+            }
+            mAh1 = lastValue.toFloat();  ///odczytaj ostanią wartość pojemności i przypisz ją jako aktualną
+            dataFile.close();
+        }
+    } else 
+    {
+        dataFile = SD.open("pojemnosc", FILE_WRITE);
+        if (dataFile) {
+            dataFile.println(mAh);  ///jeśli pliku brak, nadpisz go wartością max (przy definicji)
+            dataFile.close();
+        }
+    }  
+
+//////////////////początkowy SOC z napięcia
 busvoltage = ina219.getBusVoltage_V(); 
 for (int i = 0; i < 30; i = i + 1)
 {
   if (busvoltage >= napiecia[i])
   {
   SOC=2575/mAh_OCV[i]*100; //% SOC
-  mAh=mAh_OCV[i]; //SOC mAh
+  mAh2=mAh_OCV[i]; //SOC mAh
   break;  //to mi wyskoczy z pętli for??
   }
 }
 
+mAh=((2*mAh1)+mAh2)/3; ///szacowanie SOC dla biednych
+mAh=mAh*0.99;  ///odejmujemy za postój, kiedyś do poprawy na bazie modelu baterii
 
 Wire.begin();   ///nie wiem czy to musi tu być
 /////////żyroskop konfig
@@ -186,7 +238,8 @@ bateria_sygnalizacja();
 ///////żyroskop
 gyro();
 
-
+/////wybierz tryb świecenia na podstawie akcji
+swieciszTY();
 
 if (millis() > overrideEndTime) currentMode = PACIFICA;
     
@@ -202,19 +255,40 @@ if (millis() > overrideEndTime) currentMode = PACIFICA;
             case SOC_5: SOC5(); break;
             case SOC_100: SOC100(); break;
             case RAINBOW: rainbow(); break;
+            case flames:  Fire2012(); break;
+            case cylon: cylon_(); break;
+            case twinkle: twinkleFOX(); break;
             default: PACIFICA_loop(); break;
         }
     }
 
-    FastLED.show();
-
-
+FastLED.show();
 }
 
 
-
 ///////////////////////////////////////////////////////////////////////////////////////////////
+void swieciszTY() //wybiera tryb świecenia na bazie tego co się akurat dzieje
+{
+  if (accZ > 12) 
+  {
+        currentMode = RAINBOW;
+        overrideEndTime = millis() + 5000;
+  } else if (fabs(angleX - lastAngleX) > 10) {
+        currentMode = flames;
+        overrideEndTime = millis() + 3000;
+  } else if (fabs(accY) > 3) {
+        currentMode = RAINBOW;
+        overrideEndTime = millis() + 5000;
+  }else if (fabs(angleY - lastAngleY) > 10) {
+        currentMode = cylon;
+        overrideEndTime = millis() + 3000;
+  }else if (fabs(angleZ - lastAngleZ) > 10) {
+        currentMode = twinkle;
+        overrideEndTime = millis() + 3000;
+  }
+       
 
+}
 void tryb_ladowania() ///laduj==1 żądanie ładowania; ładuj == 0 nie ładujemy
 {
 pstryczek=digitalRead(wlancz);
@@ -300,26 +374,43 @@ if(current_mA<0) ///upewnić się że prąd w - oznacza ładowanie
 }
 
 SOC=2575/mAh*100; // w %
+
+if (obrot >5)
+{
+dataFile = SD.open("pojemnosc", FILE_WRITE);
+        if (dataFile)
+        {
+            dataFile.println(mAh); //zrzut danych do pliku
+            dataFile.close();
+        }
+obrot=0;   //zeruj licznik pętli     
+}
+obrot=obrot+1;
+manageSDOverflow();
 }
 
 void gyro()///// gyroskop eventy
 {
+  lastAngleX = angleX; ///nadpisywanie kątów
+  lastAngleY = angleY; ///nadpisywanie kątów
+  lastAngleZ = angleZ; ///nadpisywanie kątów
+
   sensors_event_t a, g, temp;
-mpu.getEvent(&a, &g, &temp);
+  mpu.getEvent(&a, &g, &temp);
 
 ///przyspieszenia w m/s2
-// a.acceleration.x
-// a.acceleration.y
-// a.acceleration.z      ///9,81 domyślne!
+ accX=a.acceleration.x;
+ accY=a.acceleration.y;
+ accZ=a.acceleration.z;      ///9,81 domyślne!
 
 ///prędkość kątowa rad/s
-// g.gyro.x
-// g.gyro.y
-// g.gyro.z
+angleX=g.gyro.x*57.2958; // Konwersja rad/s na stopnie
+angleY=g.gyro.y*57.2958; // Konwersja rad/s na stopnie
+angleZ=g.gyro.z*57.2958; // Konwersja rad/s na stopnie
 
 ///temperatura w *C
 // temp.temperature
-///
+
 }
 
 void term_bezp()  //// abortuj ładowanie jak jest za gorąco (wodorki nie lubią się przegrzewać)
@@ -395,6 +486,28 @@ void bateria_sygnalizacja()  ///jak poziom SOC spada poniżej 10% zaczniej drze�
 
 }
 
+void manageSDOverflow() { //obsługa SD żeby jej nie zatkać
+    int lineCount = 0;
+    dataFile = SD.open("pojemnosc", FILE_READ);
+    if (dataFile) {
+        while (dataFile.available()) {
+            dataFile.readStringUntil('\n');
+            lineCount++;
+        }
+        dataFile.close();
+    }
+
+    if (lineCount > 1000) { // Ustaw limit linii
+        //Serial.println("SD full, clearing file...");
+        SD.remove("pojemnosc");
+        dataFile = SD.open("pojemnosc", FILE_WRITE);
+        if (dataFile) {
+            dataFile.println(mAh);
+            dataFile.close();
+        }
+    }
+}
+
 //////////////////////////LEDy
 
 ///////////////////////////////////////////////warunkowane SOC
@@ -428,6 +541,87 @@ void rainbow() {
     for (int i = 0; i < NUM_LEDS; i++) {
         leds[i] = CHSV((i * 10) % 255, 255, 250);  ///ostatnia wartość to jasność
     }
+}
+
+////twinkleFOX
+void twinkleFOX()
+{
+  fadeToBlackBy(leds, NUM_LEDS, 20);
+    int pos = random(NUM_LEDS);
+    leds[pos] = CRGB::White;
+}
+
+///////CYLON
+void cylon_()
+{
+  static uint8_t hue = 0;
+    for(int i = 0; i < NUM_LEDS; i++) {
+        // Set the i'th led to red 
+        leds[i] = CHSV(hue++, 255, 255);
+        // Show the leds
+        FastLED.show(); 
+        // now that we've shown the leds, reset the i'th led to black
+        // leds[i] = CRGB::Black;
+        fadeall();
+        // Wait a little bit before we loop around and do it again
+        delay(10);
+    }
+   
+      // Now go in the other direction.  
+    for(int i = (NUM_LEDS)-1; i >= 0; i--) {
+        // Set the i'th led to red 
+        leds[i] = CHSV(hue++, 255, 255);
+        // Show the leds
+        FastLED.show();
+        // now that we've shown the leds, reset the i'th led to black
+        // leds[i] = CRGB::Black;
+        fadeall();
+        // Wait a little bit before we loop around and do it again
+        delay(10);
+    }
+}
+void fadeall() 
+{ 
+for(int i = 0; i < NUM_LEDS; i++)
+{ leds[i].nscale8(250); } 
+}
+
+//////////////flames
+#define COOLING  55
+#define SPARKING 120
+void Fire2012()
+{
+  // Array of temperature readings at each simulation cell
+  static uint8_t heat[NUM_LEDS];
+ 
+  // Step 1.  Cool down every cell a little
+    for( int i = 0; i < NUM_LEDS; i++) {
+      heat[i] = qsub8( heat[i],  random8(0, ((COOLING * 10) / NUM_LEDS) + 2));
+    }
+  
+    // Step 2.  Heat from each cell drifts 'up' and diffuses a little
+    for( int k= NUM_LEDS - 1; k >= 2; k--) {
+      heat[k] = (heat[k - 1] + heat[k - 2] + heat[k - 2] ) / 3;
+    }
+    
+    // Step 3.  Randomly ignite new 'sparks' of heat near the bottom
+    if( random8() < SPARKING ) {
+      int y = random8(7);
+      heat[y] = qadd8( heat[y], random8(160,255) );
+    }
+ 
+    // Step 4.  Map from heat cells to LED colors
+    for( int j = 0; j < NUM_LEDS; j++) {
+      CRGB color = HeatColor( heat[j]);
+      int pixelnumber;
+      if( gReverseDirection ) {
+        pixelnumber = (NUM_LEDS-1) - j;
+      } else {
+        pixelnumber = j;
+      }
+      leds[pixelnumber] = color;
+    }
+    FastLED.delay(1000 / FRAMES_PER_SECOND);
 }
 
 //////////////////////////////////////////////////////////////////////////////////
