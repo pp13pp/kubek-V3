@@ -17,12 +17,16 @@ CRGB leds[NUM_LEDS];
 
 /////// świecenie tryby
 //bool overrideEffect = false;  // Flaga do kontroli efektu
-enum EffectMode { PACIFICA, SOC10, SOC5, RAINBOW };  ///możliwe tryby
+enum EffectMode { PACIFICA, SOC_10, SOC_5, SOC_100, RAINBOW };  ///możliwe tryby
 EffectMode currentMode = PACIFICA;
 unsigned long overrideEndTime = 0;
-unsigned long overrideEndTime = 0;
-int DELAYVAL=750; //czas bazowy wyświetlania efektów systemowych [ms]
 
+int T_sygnalizacji=10000; ///czas bazowy sygnalizacji
+int DELAYVAL=750; //czas bazowy wyświetlania efektów systemowych [ms]
+unsigned long lastEffectTime = 0; 
+bool SOC10Active = false; ///flaga do kontroli efektu świecenia przy SOC 10%
+bool SOC5Active = false; ///flaga do kontroli efektu świecenia przy SOC 5%
+bool SOC100Active = false; ///flaga do kontroli efektu świecenia przy SOC 99%
 
 //////do obsługi żyroskopu
 float lastAngleX = 0; ///poprzedni kąt nachylenia osi X
@@ -177,18 +181,33 @@ term_bezp();
 tryb_ladowania(); // odpowiada za ładowanie
 
 ////sygnalizacja niskiego stanu ogniw
-bateria_pada();  
-
-
+bateria_sygnalizacja();
 
 ///////żyroskop
 gyro();
 
 
 
+if (millis() > overrideEndTime) currentMode = PACIFICA;
+    
+        if (millis() > overrideEndTime) currentMode = PACIFICA;
+    
+    if (SOC5Active) {
+        SOC5();
+    } else if (SOC10Active) {
+        SOC10();
+    } else {
+        switch (currentMode) {
+            case SOC_10: SOC10(); break;
+            case SOC_5: SOC5(); break;
+            case SOC_100: SOC100(); break;
+            case RAINBOW: rainbow(); break;
+            default: PACIFICA_loop(); break;
+        }
+    }
 
+    FastLED.show();
 
- 
 
 }
 
@@ -334,70 +353,167 @@ float Vi = analogRead(A0) * (Vin / 1023.0);
 
 
 
-void bateria_pada()  ///jak poziom SOC spada poniżej 10% zaczniej drzeć mordę
+void bateria_sygnalizacja()  ///jak poziom SOC spada poniżej 10% zaczniej drzeć mordę
 {
-  if (mAh<mAh_max*0.1)  //dla 10% wstępne ostrzeżenie
-  {
-    EVERY_N_SECONDS(120)  // Co 120 sekund mrygaj
-    { 
-        overrideEffect = true;
-        overrideEndTime = millis() + DELAYVAL;  // przez delayval
-        FastLED.clear(); //zgaś wszystko
-        FastLED.show();
-        fill_solid(leds, NUM_LEDS, CRGB(76, 0, 0));  // 30% z maksymalnej wartości 255 (0.3 * 255 ≈ 76)
-        FastLED.show();  
-    }
-
-    // Po delayVAL przywróć efekt bierzący
-      if (overrideEffect && millis() > overrideEndTime) 
-    {
-        overrideEffect = false;
-    }
-    // Jeśli efekt nie jest nadpisany, wyświetl to co robiłeś do tej pory
-    if (!overrideEffect)
-    {
-        swiecenie_LED();  // funkcja obsługująca pokaz LED
-        FastLED.show();
-    }
-    
-  }
-  
-  if (mAh<mAh_max*0.05)   //jest źle, gdzie mój prąd!
-  {
-        EVERY_N_SECONDS(120)  // Co 120 sekund mrygaj
-    { 
-        overrideEffect = true;
-        overrideEndTime = millis() + DELAYVAL*2;  // Przez delayval x 2
-        FastLED.clear(); //zgaś wszystko
-        FastLED.show();
-        for(int i=0; i<LEDOW-5; i=i+5) //co 5 zapal na czerwono
-        {
-        leds[i] = CRGB(150, 0, 0); ///napierdalaj czerowym
+   if (millis() - lastEffectTime > T_sygnalizacji)
+   {
+        lastEffectTime = millis();
+        
+        if (mAh<mAh_max*0.05) //jest źle, gdzie mój prąd!
+        {   SOC5Active = true;
+            SOC10Active = false;
+            SOC100Active = false;
+        } else if (mAh<mAh_max*0.10) //dla 10% wstępne ostrzeżenie
+        {   SOC10Active = true;
+            SOC5Active = false;
+            SOC100Active = false;
+        } else if (mAh>mAh_max*0.99 && czas_ladowania>1*3600*1000 && czas_ladowania>6*3600*1000)  //jak masz powyżej 99% podczał ładowania powyżej 1h i poniżej 5h
+        { SOC100Active = true;
+          SOC5Active = false;
+          SOC10Active = false;
+        }else
+        {   SOC10Active = false;
+            SOC5Active = false;
+            SOC100Active = false;
         }
-        FastLED.show();  
+
     }
 
-    // Po delayVAL przywróć efekt bierzący
-    if (overrideEffect && millis() > overrideEndTime) 
-    {
-        overrideEffect = false;
-    }
-    // Jeśli efekt nie jest nadpisany, wyświetl to co robiłeś do tej pory
-    if (!overrideEffect)
-    {
-        swiecenie_LED();  // funkcja obsługująca pokaz LED
-        FastLED.show();
-    }
+  if (SOC5Active && millis() - lastEffectTime > DELAYVAL*2)
+  {
+    SOC5Active = false;
   }
+    
+  if (SOC10Active && millis() - lastEffectTime > DELAYVAL)
+  {
+    SOC10Active = false;
+  }
+    if (SOC100Active && millis() - lastEffectTime > DELAYVAL*2)
+  {
+    SOC100Active = false;
+  }
+
 }
 
 //////////////////////////LEDy
+
+///////////////////////////////////////////////warunkowane SOC
 void SOC10()  // jak SOC spadnie poniżej 10%
 {
-
+        FastLED.clear(); //zgaś wszystko
+        FastLED.show();
+        fill_solid(leds, NUM_LEDS, CRGB(76, 0, 0));  // 30% z maksymalnej wartości 255 (0.3 * 255 ≈ 76)
 }
 
-void swiecenie_LED()
+void SOC5() // jak SOC spadnie poniżej 5%
 {
+        FastLED.clear(); //zgaś wszystko
+        FastLED.show();
+        for(int i=0; i<NUM_LEDS-5; i=i+5) //co 5 zapal na czerwono
+        {
+        leds[i] = CRGB(150, 0, 0); ///napierdalaj czerowym
+        }
+}
+void SOC100()  // jak SOC powyżej 99% podczas ładowania
+{
+        fill_solid(leds, NUM_LEDS, CRGB(0, 85, 0));  // 30% z maksymalnej wartości 255 (0.3 * 255 ≈ 76)
+        FastLED.clear(); //zgaś wszystko
+        FastLED.show();
+        delay(DELAYVAL/2);
+        fill_solid(leds, NUM_LEDS, CRGB(0, 85, 0));  // 30% z maksymalnej wartości 255 (0.3 * 255 ≈ 76)
+}
+///////////////////////////////////////////////////////////////
 
+void rainbow() {
+    for (int i = 0; i < NUM_LEDS; i++) {
+        leds[i] = CHSV((i * 10) % 255, 255, 250);  ///ostatnia wartość to jasność
+    }
+}
+
+//////////////////////////////////////////////////////////////////////////////////
+void PACIFICA_loop()
+{// Increment the four "color index start" counters, one for each wave layer.
+  // Each is incremented at a different speed, and the speeds vary over time.
+  static uint16_t sCIStart1, sCIStart2, sCIStart3, sCIStart4;
+  static uint32_t sLastms = 0;
+  uint32_t ms = GET_MILLIS();
+  uint32_t deltams = ms - sLastms;
+  sLastms = ms;
+  uint16_t speedfactor1 = beatsin16(3, 179, 269);
+  uint16_t speedfactor2 = beatsin16(4, 179, 269);
+  uint32_t deltams1 = (deltams * speedfactor1) / 256;
+  uint32_t deltams2 = (deltams * speedfactor2) / 256;
+  uint32_t deltams21 = (deltams1 + deltams2) / 2;
+  sCIStart1 += (deltams1 * beatsin88(1011,10,13));
+  sCIStart2 -= (deltams21 * beatsin88(777,8,11));
+  sCIStart3 -= (deltams1 * beatsin88(501,5,7));
+  sCIStart4 -= (deltams2 * beatsin88(257,4,6));
+
+  // Clear out the LED array to a dim background blue-green
+  fill_solid( leds, NUM_LEDS, CRGB( 2, 6, 10));
+
+CRGBPalette16 pacifica_palette_1 = 
+    { 0x000507, 0x000409, 0x00030B, 0x00030D, 0x000210, 0x000212, 0x000114, 0x000117, 
+      0x000019, 0x00001C, 0x000026, 0x000031, 0x00003B, 0x000046, 0x14554B, 0x28AA50 };
+CRGBPalette16 pacifica_palette_2 = 
+    { 0x000507, 0x000409, 0x00030B, 0x00030D, 0x000210, 0x000212, 0x000114, 0x000117, 
+      0x000019, 0x00001C, 0x000026, 0x000031, 0x00003B, 0x000046, 0x0C5F52, 0x19BE5F };
+CRGBPalette16 pacifica_palette_3 = 
+    { 0x000208, 0x00030E, 0x000514, 0x00061A, 0x000820, 0x000927, 0x000B2D, 0x000C33, 
+      0x000E39, 0x001040, 0x001450, 0x001860, 0x001C70, 0x002080, 0x1040BF, 0x2060FF };
+      
+  // Render each of four layers, with different scales and speeds, that vary over time
+  pacifica_one_layer( pacifica_palette_1, sCIStart1, beatsin16( 3, 11 * 256, 14 * 256), beatsin8( 10, 70, 130), 0-beat16( 301) );
+  pacifica_one_layer( pacifica_palette_2, sCIStart2, beatsin16( 4,  6 * 256,  9 * 256), beatsin8( 17, 40,  80), beat16( 401) );
+  pacifica_one_layer( pacifica_palette_3, sCIStart3, 6 * 256, beatsin8( 9, 10,38), 0-beat16(503));
+  pacifica_one_layer( pacifica_palette_3, sCIStart4, 5 * 256, beatsin8( 8, 10,28), beat16(601));
+
+  // Add brighter 'whitecaps' where the waves lines up more
+  pacifica_add_whitecaps();
+
+  // Deepen the blues and greens a bit
+  pacifica_deepen_colors();
+}
+// Add one layer of waves into the led array
+void pacifica_one_layer( CRGBPalette16& p, uint16_t cistart, uint16_t wavescale, uint8_t bri, uint16_t ioff)
+{
+  uint16_t ci = cistart;
+  uint16_t waveangle = ioff;
+  uint16_t wavescale_half = (wavescale / 2) + 20;
+  for( uint16_t i = 0; i < NUM_LEDS; i++) {
+    waveangle += 250;
+    uint16_t s16 = sin16( waveangle ) + 32768;
+    uint16_t cs = scale16( s16 , wavescale_half ) + wavescale_half;
+    ci += cs;
+    uint16_t sindex16 = sin16( ci) + 32768;
+    uint8_t sindex8 = scale16( sindex16, 240);
+    CRGB c = ColorFromPalette( p, sindex8, bri, LINEARBLEND);
+    leds[i] += c;
+  }
+}
+// Add extra 'white' to areas where the four layers of light have lined up brightly
+void pacifica_add_whitecaps()
+{
+  uint8_t basethreshold = beatsin8( 9, 55, 65);
+  uint8_t wave = beat8( 7 );
+  
+  for( uint16_t i = 0; i < NUM_LEDS; i++) {
+    uint8_t threshold = scale8( sin8( wave), 20) + basethreshold;
+    wave += 7;
+    uint8_t l = leds[i].getAverageLight();
+    if( l > threshold) {
+      uint8_t overage = l - threshold;
+      uint8_t overage2 = qadd8( overage, overage);
+      leds[i] += CRGB( overage, overage2, qadd8( overage2, overage2));
+    }
+  }
+}
+// Deepen the blues and greens
+void pacifica_deepen_colors()
+{
+  for( uint16_t i = 0; i < NUM_LEDS; i++) {
+    leds[i].blue = scale8( leds[i].blue,  145); 
+    leds[i].green= scale8( leds[i].green, 200); 
+    leds[i] |= CRGB( 2, 5, 7);
+  }
 }
