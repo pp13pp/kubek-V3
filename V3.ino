@@ -22,12 +22,13 @@ CRGB leds[NUM_LEDS];
 ///baza modów świecenia
 enum Mode { RAINBOW, PACIFICA, CYLON, LAVA, TWINKLE, PULSE, FIRE, COLORWAVES, SPEED, FULL_TILT };
 Mode currentMode = PACIFICA;  //domyślny bo go lubię i chuj
-
+Mode overrideMode = PACIFICA;
+bool overrideActive = false;
  
 
 int T_sygnalizacji=10000; ///czas bazowy sygnalizacji
 int DELAYVAL=750; //czas bazowy wyświetlania efektów systemowych [ms]
-int T_zmiany = 10000;
+int T_zmiany = 20000; ///czas bazowy przejść między trybami zwykłymi
 
 unsigned long lastSignalTime = 0;
 unsigned long lastEffectChange = 0;
@@ -36,6 +37,7 @@ bool isBlinking = false;
 
 unsigned long gyroEffectStart = 0;
 bool gyroEffectActive = false;
+
 unsigned long discoStartTime = 0;
 bool discoActive = false;
 
@@ -47,25 +49,29 @@ uint16_t pacificaWave = 0;
 uint8_t pulseBrightness = 0;
 bool pulseUp = true;
 
-float BRIGHTNESS_MAX=250*0.6; //peak jasność
+float BRIGHTNESS_MAX=250*0.5; //peak jasność
 
 /////INICJALIZACJA MOFUŁÓW
 Adafruit_MPU6050 mpu;
 Adafruit_INA219 ina219;
 
 //////do obsługi żyroskopu
-// float lastAngleX = 0; ///poprzedni kąt nachylenia osi X
-// float lastAngleY = 0; ///poprzedni kąt nachylenia osi Y
-// float lastAngleZ = 0; ///poprzedni kąt nachylenia osi Z
-float GyroX=0; //
-float GyroY=0;
-float GyroZ=0;
+float GyroX = 0; /// kąt nachylenia osi X
+float GyroY = 0; /// kąt nachylenia osi Y
+float GyroZ = 0; /// kąt nachylenia osi Z
+float AccXold=0;
+float AccYold=0;
+float AccZold=9.8;
+
+float Gyro_mix_=0; //
+float Acc_mix_=0;
+float Gyro_mix_OLD=0, Acc_mix_OLD=0;
 float AccX=0;
 float AccY=0;
 float AccZ=0;
-float Acc_treshhold=2; // wartość przyspieszenia triggerująca efekty
-float Acc_T=1000; //czas działania efektów od przyspieszeń
-float Gyro_treshhold=45; //no idea, jeśli któraś z osi przekroczy ten próg kubek zacznie świecić póki kąty się nie wyzerują
+float Acc_treshhold=0.2; // wartość przyspieszenia triggerująca efekty
+float Acc_T=800; //czas działania efektów od przyspieszeń
+float Gyro_treshhold=15; //no idea, jeśli któraś z osi przekroczy ten próg kubek zacznie świecić póki kąty się nie wyzerują
 float pitchFromAccel=0;
 float rollFromAccel=0;
 double _pitch=0;
@@ -75,6 +81,8 @@ float _roll0=0;
 double pitch, roll;
 float Acc_mix, Gyro_mix;
 float GyroEffectDuration=20*1000; //czas trwania efektu od kątu pochylenia
+float odchylZgraniczny=8; ///odchył od pionu do uwzględniania przechyłu w przyspieszeniach
+
 
 ///////////ogólne i sprzętowe
 #define laduj 0 //enable ładowania ogniw
@@ -119,6 +127,12 @@ float napiecia[]={4.2, 4.06, 4.03, 3.99, 3.97, 3.94, 3.93, 3.91, 3.90, 3.89, 3.8
 float mAh_OCV[]={0,0.001,21.54,78.01, 152.30,229.56,321.693,452.45,586.18,722.88,868.49,1026.02,1141.91,1284.54,1415.36,1543.09,1685.73,1795.69,1899.782,2015.67,2122.58,2214.71,2312.77,2384.11,2443.53,2485.14,2523.74,2547.54,2556.463,2571.322,2575}; //progi pojemności mAh
 int mAh_max=2575; //max SOC - zmierzyć kiedyś
 
+///////////////////////////wifi
+char auth[] = "YourAuthToken"; // 
+char ssid[] = "YourSSID";
+char pass[] = "YourPassword";
+
+
 void setup() {
 
 pinMode(laduj, OUTPUT); ///okazuję się że w esp trzeba ustawić tryb pinu... ciekawe ile rzeczy mi przez to nie działało
@@ -138,7 +152,7 @@ FastLED.show();
 
 ////////ina219 miernik prądu
 ina219.begin();
-delay(2000);
+delay(500);
 
 /////karta SD i początkowe SOC na bazie zapisu z SD
 
@@ -191,63 +205,11 @@ mpu.begin();
 
 
    mpu.setAccelerometerRange(MPU6050_RANGE_4_G);  //arbitralnie
-  // Serial.print("Accelerometer range set to: ");
-  // switch (mpu.getAccelerometerRange()) {
-  // case MPU6050_RANGE_2_G:
-  //   // Serial.println("+-2G");
-  //   break;
-  // case MPU6050_RANGE_4_G:
-    // Serial.println("+-4G");
-    // break;
-  // case MPU6050_RANGE_8_G:
-  //   // Serial.println("+-8G");
-  //   break;
-  // case MPU6050_RANGE_16_G:
-  //   // Serial.println("+-16G");
-  //   break;
-  // }
+
   mpu.setGyroRange(MPU6050_RANGE_500_DEG);   //arbitralnie
-  // Serial.print("Gyro range set to: ");
-  // switch (mpu.getGyroRange()) {
-  // case MPU6050_RANGE_250_DEG:
-    // Serial.println("+- 250 deg/s");
-    // break;
-  // case MPU6050_RANGE_500_DEG:
-  //   // Serial.println("+- 500 deg/s");
-  //   break;
-  // case MPU6050_RANGE_1000_DEG:
-  //   // Serial.println("+- 1000 deg/s");
-  //   break;
-  // case MPU6050_RANGE_2000_DEG:
-  //   // Serial.println("+- 2000 deg/s");
-  //   break;
-  // }
 
   mpu.setFilterBandwidth(MPU6050_BAND_5_HZ);   //chyba częściej nie ma sensu
-  // Serial.print("Filter bandwidth set to: ");
-  // switch (mpu.getFilterBandwidth()) {
-  // case MPU6050_BAND_260_HZ:
-  //   // Serial.println("260 Hz");
-  //   break;
-  // case MPU6050_BAND_184_HZ:
-  //   // Serial.println("184 Hz");
-  //   break;
-  // case MPU6050_BAND_94_HZ:
-  //   // Serial.println("94 Hz");
-  //   break;
-  // case MPU6050_BAND_44_HZ:
-  //   // Serial.println("44 Hz");
-  //   break;
-  // case MPU6050_BAND_21_HZ:
-    // Serial.println("21 Hz");
-    // break;
-  // case MPU6050_BAND_10_HZ:
-  //   // Serial.println("10 Hz");
-  //   break;
-  // case MPU6050_BAND_5_HZ:
-  //   // Serial.println("5 Hz");
-    // break;
-  // }
+
   
 previousMillis = millis();
 }
@@ -330,6 +292,8 @@ if (!discoActive && Acc_mix > Acc_treshhold) {
     discoActive = true;
     discoStartTime = now;
     currentMode = SPEED;
+    Serial.print("Disco");
+    Serial.println("");
   }
 
   // Wyzwolenie trybu koloru z żyroskopu
@@ -337,6 +301,8 @@ if (!gyroEffectActive && Gyro_mix > Gyro_treshhold) {
     gyroEffectActive = true;
     gyroEffectStart = now;
     currentMode = FULL_TILT;
+Serial.print("FullTilt ");
+Serial.println("");
   }
   // Wyłączenie efektów specjalnych po czasie
 if (discoActive && now - discoStartTime >= Acc_T) {
@@ -384,8 +350,17 @@ switch (currentMode)
       break;
     
 }
-
-
+Serial.println("");
+Serial.println("************");
+Serial.print("kąt ");
+Serial.println(Gyro_mix);
+Serial.print("zmiana przyspieszeń ");
+Serial.println(Acc_mix);
+Serial.print("tryb świecenia ");
+Serial.println(currentMode);
+Serial.print("Gyro  ");
+Serial.println(gyroEffectActive);
+Serial.println("****");
 }
 ///////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -404,8 +379,8 @@ else
 digitalWrite(laduj,LOW);
 }
 
-Serial.println("napiecie odczytane na przelanczniku ");
-Serial.println(przelancznik);
+// Serial.print("napiecie odczytane na przelanczniku ");
+// Serial.println(przelancznik);
 
 
 if(termika==0) ///jak termicznie bezpiecznie, dopiero myśl o ładowaniu
@@ -426,14 +401,14 @@ if(termika==0) ///jak termicznie bezpiecznie, dopiero myśl o ładowaniu
   digitalWrite(laduj,LOW);
   // ladowanie=0;
 
-// Serial.print("flaga ładowania ");
-// Serial.println(ladowanie);
+Serial.print("flaga ładowania ");
+Serial.println(ladowanie);
   }
  
 // Serial.println("");
-// Serial.print("termiczny IF; ilosc stopni ");
-// Serial.println(temp1);
-// Serial.println(""); 
+Serial.print("temperatura ");
+Serial.println(temp1);
+Serial.println(""); 
 }
 // Serial.print("napiecie odczytane na przelanczniku ");
 // Serial.println(przelancznik);
@@ -478,8 +453,8 @@ void obl_SOC()  ///aktualne SOC baterii
 // Serial.print("pojemność przed ");
 // Serial.println(mAh);
 mAh=mAh+(current_mA*czas/3600000.0); //pojemność == poprzednia pojemność - prąd*czas w h (AKA Culomb counting)   /// upewnić się że prąd w + i * występuje i to w dobre strony
-// Serial.print("pojemność po ");
-// Serial.println(mAh);
+Serial.print("pojemność po ");
+Serial.println(mAh);
 // Serial.print("czas ");
 // Serial.println(czas/3600000.0);
 
@@ -542,32 +517,68 @@ GyroY=g.gyro.y*czas/1000; // Konwersja deg/s na stopnie
 
 
 ////filtorowanie
-pitchFromAccel = (atan(AccY / abs(AccX) + pow(AccZ, 2)) * 180 / PI) ; // kąt obrotu w osi Y
-rollFromAccel = (atan(-1 * AccX / abs(AccY) + pow(AccZ, 2)) * 180 / PI); // kąt obrotu w osi X
+pitchFromAccel = (atan(AccY / (sqrt(pow(AccX,2) + pow(AccZ, 2)))) * 180 / PI) ; // kąt obrotu w osi Y
+rollFromAccel = (atan(AccX / (sqrt(pow(AccY,2) + pow(AccZ, 2)))) * 180 / PI); // kąt obrotu w osi X
 
-float filtrownik=0.60; //pitch/roll GyroFavoring
+float filtrownik=0.6; //pitch/roll GyroFavoring
 
-_pitch = filtrownik * (_pitch0 + GyroY) + (1.00 - filtrownik) * (pitchFromAccel); //obrót w osi Y oficjalnie
-_roll = filtrownik * (_roll0 + GyroX) + (1.00 - filtrownik) * (rollFromAccel); //obrót w osi X oficjalnie
-_pitch0=_pitch;
-_roll0=_roll;
+_pitch = filtrownik * (pitch + GyroY) + (1.00 - filtrownik) * (pitchFromAccel); //obrót w osi Y oficjalnie
+_roll = filtrownik * (roll + GyroX) + (1.00 - filtrownik) * (rollFromAccel); //obrót w osi X oficjalnie
+pitch=_pitch;
+roll=_roll;
 ////oficjalne wartości
-AccX=abs(AccX);
-AccY=abs(AccY);
-AccZ=abs(AccZ);
+// AccX=abs(AccX);
+// AccY=abs(AccY);
+// AccZ=abs(AccZ);
 // GyroZ=abs(GyroZ);
 
-    pitch=abs(_pitch);
-    roll=abs(_roll);
-    if(AccZ<9) //jak odchył o 0,8m/s2
-    {
-    AccX=abs(AccX-9.81*sin(pitch/180* PI));  //wartość przyspieszenia X po odjęciu grawitacji wynikającej z kąta nachylenia
-    AccY=abs(AccX-9.81*sin(roll/180* PI)); //wartość przyspieszenia Y po odjęciu grawitacji wynikającej z kąta nachylenia
-    AccZ=abs(9.81-abs((9.81*(cos(pitch/180* PI)+cos(roll/180* PI)))/2)); //wartość przyspieszenia w Z po odjęciu grawitacji wynikającej z kąta nachylenia 
-    }
+Gyro_mix=max(abs(roll),abs(pitch)); ///daj max wartość nachyleń i nią wyzwalaj efekty
+Acc_mix=max(abs(AccX-AccXold), max(abs(AccY-AccYold), abs(AccZ-AccZold))); //daj max wartość z przyspieszeń i nią wyzwalaj efekty
 
-Gyro_mix=max(roll, pitch); ///daj max wartość nachyleń i nią wyzwalaj efekty
-Acc_mix=max(AccX, max(AccY, AccZ)); //daj max wartość z przyspieszeń i nią wyzwalaj efekty
+// if (abs(Acc_mix_-Acc_mix_OLD)>Acc_treshhold)
+// {
+// Acc_mix=abs(Acc_mix_-Acc_mix_OLD);
+// }
+// else
+// {
+// Acc_mix=0;
+// }
+// Acc_mix_OLD=Acc_mix;
+
+// if(Gyro_mix_ > Gyro_treshhold)
+// {
+// Gyro_mix=abs(Gyro_mix_-Gyro_mix_OLD);
+// }
+// else
+// {
+// Gyro_mix=0;
+// }
+// Gyro_mix_OLD=Gyro_mix;
+
+AccXold=AccX;
+AccYold=AccY;
+AccZold=AccZ;
+
+// Serial.print("Gyro mix ");
+// Serial.println(Gyro_mix);
+// Serial.print("Acc mix ");
+// Serial.println(Acc_mix);
+
+
+// Serial.print("przysp Z ");
+// Serial.println(AccZ);
+// Serial.print("przysp X ");
+// Serial.println(AccX);
+// Serial.print("przysp Y ");
+// Serial.println(AccY);
+// Serial.print("obrot w osi X ");
+// Serial.println(_roll);
+// Serial.print("obrot w osi Y ");
+// Serial.println(_pitch);
+// Serial.print("X GYRO ");
+// Serial.println(GyroX);
+// Serial.print("Y GYRO ");
+// Serial.println(GyroY);
 
 ///temperatura w *C
 temp1= temp.temperature; //wyjebałem NTC, teraz to robi za bezpiecznik termiczny
@@ -677,22 +688,18 @@ void DISCO() ///świeci na Acc_T w zależności od przyspieszeń
 {
 ///go random
   for (int i = 0; i < NUM_LEDS; i++)
-  {
-    if(AccX>Acc_treshhold) ///X są zielone
-    {
-    int pos = random(NUM_LEDS);
-    leds[pos] = CHSV(94,255, random(0, 255)); ///zielony
-    }
-    if(AccZ>Acc_treshhold) ///Z są czerwone
-    {
-    int pos = random(NUM_LEDS);
-    leds[pos] = CHSV(2, 255,random(0, 255)); //czerwony
-    }
-    if(AccY>Acc_treshhold) ///Y są niebieskie
-    {
-    int pos = random(NUM_LEDS);
-    leds[pos] = CHSV(157, 255,random(0, 255)); //niebieski
-    }
+  { 
+    int posX = random(NUM_LEDS);
+    leds[posX] = CHSV(94,255, random(0, 200)); ///zielony X
+    leds[posX] = CRGB::Black; // Zgaś tę diodę przy następnym wywołaniu
+        
+    int posZ = random(NUM_LEDS);
+    leds[posZ] = CHSV(2, 255,random(0, 200)); //czerwony Z
+    leds[posZ] = CRGB::Black; // Zgaś tę diodę przy następnym wywołaniu
+
+    int posY = random(NUM_LEDS);
+    leds[posY] = CHSV(157, 255,random(0, 200)); //niebieski Y
+    leds[posY] = CRGB::Black; // Zgaś tę diodę przy następnym wywołaniu
   }
   FastLED.show();
   blinkStartTime = millis();
@@ -700,16 +707,17 @@ void DISCO() ///świeci na Acc_T w zależności od przyspieszeń
   if (isBlinking && millis() - blinkStartTime >= Acc_T) {
     isBlinking = false;
   }
+
 }
 void FullTilt() //świeci w zależności od przechyłu (500* niby max)
 {
    // Normalizacja koloru do zakresu 0–255
   // uint8_t red   = map(GyroZ, 0, 500, 0, 255);
-  uint8_t green = map(GyroX, 0, 500, 0, 255);
-  uint8_t blue  = map(GyroY, 0, 500, 0, 255);
+  uint8_t green = map(pitch, 0, 100, 0, 255);
+  uint8_t blue  = map(roll, 0, 100, 0, 255);
   uint8_t red = 50; ///obrót w osi Z to masakra do wyzerowania
   // Ustawienie jasności zależnie od Gyro_mix
-  uint8_t brightness_Gyro = map(Gyro_mix, 0, 500, 10, 220); // dolny limit 10 by nie wygasić całkowicie
+  uint8_t brightness_Gyro = map(Gyro_mix, 0, 100, 50, 150); // dolny limit 50 by nie wygasić całkowicie
 
   fill_solid(leds, NUM_LEDS, CRGB(red, green, blue));
   FastLED.setBrightness(brightness_Gyro);
