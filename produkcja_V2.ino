@@ -13,8 +13,8 @@
 #include <ESPAsyncWebServer.h>
 #include "index_html.h"
 
-const char* ssid = "KUBEK_0";  /// do zmiany na każde ESP
-String pageTitle = "KUBEK Testy"; /// do zmiany na każde ESP
+const char* ssid = "KUBEK_ANIA";  /// do zmiany na każde ESP
+String pageTitle = "KUBEK ANIA"; /// do zmiany na każde ESP
 AsyncWebServer server(80);
 
 
@@ -642,7 +642,7 @@ void obl_SOC()  ///aktualne SOC baterii
 {
   // Serial.print("pojemność przed ");
   // Serial.println(mAh);
-  mAh = mAh + (current_mA * czas / 3600000.0);  //pojemność == poprzednia pojemność - prąd*czas w h (AKA Culomb counting)   /// upewnić się że prąd w + i * występuje i to w dobre strony
+  mAh = mAh - (current_mA * czas / 3600000.0);  //pojemność == poprzednia pojemność - prąd*czas w h (AKA Culomb counting)   /// upewnić się że prąd w + i * występuje i to w dobre strony //prąd w + to rozładowanie
   // Serial.print("pojemność ");
   // Serial.println(mAh);
   // Serial.print("czas ");
@@ -658,7 +658,7 @@ void obl_SOC()  ///aktualne SOC baterii
     mAh = 1;
   }
   ///ładowanie i zerowanie SOC dla 3h pod ładowarką
-  if (current_mA < 100)  ///upewnić się że prąd w - oznacza ładowanie
+  if (current_mA < -10)  ///prąd w + to rozładowanie
   {
 
     naladowane = 1;
